@@ -5,15 +5,45 @@ import time
 from aiogram import Router, F
 from aiogram.types import Message, FSInputFile
 from aiogram.enums import ChatType
+from aiogram.filters import Command
 from keyboards.inline import get_main_keyboard
 from services.youtube import download_audio_from_youtube, MAX_TELEGRAM_FILE_SIZE
-from config import TOPICS_MODE_ENABLED, is_allowed_chat
+from config import TOPICS_MODE_ENABLED, is_allowed_chat, GROUP_MODE_ENABLED
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 # Регулярное выражение для проверки YouTube ссылок
 YOUTUBE_REGEX = r"(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\/(?:watch\?v=)?([^\s&]+)"
+
+# Обработчик команды /link для обоих типов чатов
+@router.message(Command("link"))
+async def cmd_link(message: Message):
+    """
+    Обработчик команды /link.
+    Запрашивает у пользователя ссылку на YouTube видео.
+    """
+    user_id = message.from_user.id
+    user_name = message.from_user.first_name
+    chat_id = message.chat.id
+    chat_type = message.chat.type
+    topic_id = message.message_thread_id if TOPICS_MODE_ENABLED else None
+    
+    # Проверка для групповых чатов
+    if chat_type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        if not GROUP_MODE_ENABLED:
+            return
+        if not is_allowed_chat(chat_id, topic_id):
+            logger.info(f"Команда /link отклонена в группе {chat_id} (топик: {topic_id}) от пользователя {user_id}")
+            return
+    
+    logger.info(f"Пользователь {user_id} ({user_name}) использовал команду /link в чате {chat_id} (топик: {topic_id})")
+    
+    # Ответ зависит от типа чата
+    is_group_chat = chat_type in {ChatType.GROUP, ChatType.SUPERGROUP}
+    await (message.reply if is_group_chat else message.answer)(
+        "Пришлите ссылку на YouTube видео, и я скачаю из него аудио."
+    )
 
 @router.message(F.text.regexp(YOUTUBE_REGEX))
 async def process_youtube_link(message: Message, is_group_chat=False, topic_id=None):

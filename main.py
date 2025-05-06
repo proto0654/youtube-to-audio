@@ -9,6 +9,7 @@ from aiogram.client.default import DefaultBotProperties
 from config import BOT_TOKEN, GROUP_MODE_ENABLED
 from handlers import routers
 from services.youtube import force_cleanup_downloads_folder
+from services.commands import set_commands
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
@@ -52,6 +53,9 @@ async def main():
     # Получаем информацию о боте и выводим в лог
     bot_info = await bot.get_me()
     logger.info(f"Бот запущен как @{bot_info.username} (ID: {bot_info.id})")
+    
+    # Регистрация команд бота в меню Telegram
+    await set_commands(bot)
     
     # Пропуск накопившихся апдейтов и запуск поллинга
     await bot.delete_webhook(drop_pending_updates=True)

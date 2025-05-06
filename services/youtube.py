@@ -113,7 +113,7 @@ def force_cleanup_downloads_folder():
 def enhance_metadata(metadata):
     """
     Улучшает метаданные трека, извлекая информацию из названия, если есть возможность.
-    Очищает названия треков от упоминаний каналов-источников.
+    Очищает названия треков от упоминаний каналов-источников и убирает имя канала из начала/конца.
     
     Args:
         metadata: Словарь с метаданными
@@ -122,24 +122,30 @@ def enhance_metadata(metadata):
         dict: Улучшенные метаданные
     """
     try:
+        import re
         title = metadata.get('title', '')
         artist = metadata.get('artist', '')
+        channel = metadata.get('channel') or metadata.get('uploader', '')
         
         # Если у нас есть название и нет исполнителя, пробуем его извлечь из названия
         if title and (not artist or artist == 'Unknown Artist'):
-            # Ищем разделители, которые могут указывать на формат "Исполнитель - Название"
-            separators = [' - ', ' – ', ' — ', ' – ', ' — ', ' • ', ' | ', ' : ', ' : ', ' _ ']
-            
+            separators = [' - ', ' – ', ' — ', ' • ', ' | ', ' : ', ' _ ']
             for separator in separators:
                 if separator in title:
                     parts = title.split(separator, 1)
-                    if len(parts) == 2:
-                        # Проверяем, что обе части не пустые
-                        if parts[0].strip() and parts[1].strip():
-                            metadata['artist'] = parts[0].strip()
-                            metadata['title'] = parts[1].strip()
-                            logger.info(f"Извлечен исполнитель '{metadata['artist']}' из названия трека")
-                            break
+                    if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+                        metadata['artist'] = parts[0].strip()
+                        metadata['title'] = parts[1].strip()
+                        break
+        
+        # Удаляем имя канала из начала или конца названия
+        if channel and metadata.get('title'):
+            # В начале
+            pattern_start = rf'^{re.escape(channel)}[\s\-:|•]*'
+            # В конце
+            pattern_end = rf'[\s\-:|•]*{re.escape(channel)}$'
+            metadata['title'] = re.sub(pattern_start, '', metadata['title'], flags=re.IGNORECASE).strip()
+            metadata['title'] = re.sub(pattern_end, '', metadata['title'], flags=re.IGNORECASE).strip()
         
         # Если у нас до сих пор нет исполнителя, пробуем извлечь его из названия, если есть "by", "feat", "ft."
         if (not metadata.get('artist') or metadata.get('artist') == 'Unknown Artist') and title:
@@ -150,7 +156,6 @@ def enhance_metadata(metadata):
             ]
             
             for pattern in patterns:
-                import re
                 match = re.search(pattern, title)
                 if match:
                     artist_name = match.group(1).strip()
@@ -164,15 +169,12 @@ def enhance_metadata(metadata):
         
         # Очищаем название от типичных суффиксов
         if metadata.get('title'):
-            import re
-            
             # Очищаем название от канала-источника в конце
             channel_suffixes = [
                 r'\s*-\s*[^-\(\)\[\]]+$',  # "Title - Channel Name" в конце строки
                 r'\s*\|\s*[^|\(\)\[\]]+$',  # "Title | Channel Name" в конце строки
                 r'\s*•\s*[^•\(\)\[\]]+$',  # "Title • Channel Name" в конце строки
             ]
-            
             for pattern in channel_suffixes:
                 metadata['title'] = re.sub(pattern, '', metadata['title'], flags=re.IGNORECASE).strip()
             
@@ -190,7 +192,6 @@ def enhance_metadata(metadata):
                 r'\s*\(High\s+Quality\)', r'\s*\(Extended\s+Version\)', r'\s*\(Extended\)',
                 r'\s*\(Official\s+Video\s+HD\)\(Audio\s+HD\)'
             ]
-            
             for suffix in video_suffixes:
                 metadata['title'] = re.sub(suffix, '', metadata['title'], flags=re.IGNORECASE).strip()
             
@@ -299,6 +300,7 @@ async def download_audio_from_youtube(url: str) -> tuple:
                 metadata['artist'] = info.get('artist') or info.get('uploader', 'Unknown Artist')
                 metadata['album'] = info.get('album', 'YouTube Audio')
                 metadata['thumbnail'] = info.get('thumbnail')
+                metadata['channel'] = info.get('channel') or info.get('uploader', '')
                 
                 # Форматируем длительность
                 duration_sec = info.get('duration')
@@ -307,7 +309,7 @@ async def download_audio_from_youtube(url: str) -> tuple:
                     seconds = int(duration_sec) % 60
                     metadata['duration'] = f"{minutes}:{seconds:02d}"
                 
-                # Очищаем и улучшаем метаданные
+                # Всегда очищаем метаданные
                 metadata = enhance_metadata(metadata)
         
         # Ищем новые файлы после загрузки
@@ -544,7 +546,7 @@ async def search_youtube_with_ytdlp(query: str, limit: int = 0) -> list:
     
     try:
         # Если лимит не задан, устанавливаем значение по умолчанию 30 результатов
-        search_limit = 30 if limit == 0 else limit
+        search_limit = 100 if limit == 0 else limit
         search_query = f"ytsearch{search_limit}:{query}"
         
         # Оптимизированные настройки для быстрого поиска

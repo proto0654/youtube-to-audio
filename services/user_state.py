@@ -19,6 +19,9 @@ class UserStateManager:
         # Счетчики запросов пользователей: user_id -> [(timestamp, count), ...]
         self._request_counters: Dict[int, list] = defaultdict(list)
         
+        # Хранилище результатов поиска по ID сообщения: (chat_id, message_id) -> результаты поиска
+        self._message_search_results: Dict[Tuple[int, int], Dict[str, Any]] = {}
+        
         # Время в секундах для отслеживания запросов (1 час)
         self._request_window = 3600
     
@@ -205,6 +208,75 @@ class UserStateManager:
         )
         
         return count
+
+    def store_search_results_by_message(self, chat_id: int, message_id: int, pagination_data: dict) -> None:
+        """
+        Сохраняет результаты поиска для конкретного сообщения.
+        Это позволяет перелистывать результаты любому пользователю, а не только автору запроса.
+        
+        Args:
+            chat_id: ID чата/группы
+            message_id: ID сообщения с результатами поиска
+            pagination_data: Данные пагинации (результаты поиска)
+        """
+        key = (chat_id, message_id)
+        self._message_search_results[key] = pagination_data
+        logger.debug(f"Сохранены результаты поиска для сообщения {message_id} в чате {chat_id}")
+
+    def get_search_results_by_message(self, chat_id: int, message_id: int) -> Optional[dict]:
+        """
+        Получает результаты поиска для конкретного сообщения.
+        
+        Args:
+            chat_id: ID чата/группы
+            message_id: ID сообщения с результатами поиска
+            
+        Returns:
+            Данные пагинации или None, если не найдены
+        """
+        key = (chat_id, message_id)
+        return self._message_search_results.get(key)
+
+    def update_search_results_by_message(self, chat_id: int, message_id: int, pagination_data: dict) -> None:
+        """
+        Обновляет результаты поиска для конкретного сообщения.
+        
+        Args:
+            chat_id: ID чата/группы
+            message_id: ID сообщения с результатами поиска
+            pagination_data: Новые данные пагинации
+        """
+        key = (chat_id, message_id)
+        if key in self._message_search_results:
+            self._message_search_results[key] = pagination_data
+            logger.debug(f"Обновлены результаты поиска для сообщения {message_id} в чате {chat_id}")
+    
+    def clear_search_results_by_message(self, chat_id: int, message_id: int) -> None:
+        """
+        Удаляет результаты поиска для конкретного сообщения.
+        
+        Args:
+            chat_id: ID чата/группы
+            message_id: ID сообщения с результатами поиска
+        """
+        key = (chat_id, message_id)
+        if key in self._message_search_results:
+            del self._message_search_results[key]
+            logger.debug(f"Удалены результаты поиска для сообщения {message_id} в чате {chat_id}")
+
+    def cleanup_old_search_results(self, max_age_hours: int = 24) -> int:
+        """
+        Очищает старые результаты поиска для освобождения памяти.
+        
+        Args:
+            max_age_hours: Максимальный возраст результатов поиска в часах
+            
+        Returns:
+            Количество удаленных записей
+        """
+        # Пока не реализуем, так как у нас нет хранения времени создания записей
+        # В будущем можно добавить timestamp к каждой записи и удалять устаревшие
+        return 0
 
 # Создаем глобальный экземпляр менеджера состояний
 user_state_manager = UserStateManager() 

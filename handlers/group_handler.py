@@ -107,6 +107,10 @@ async def cmd_search_group(message: Message, command: CommandObject):
         )
         return
     
+    # Сбрасываем предыдущее состояние просмотра результатов для этого пользователя
+    # Это позволит начать новый поиск даже если предыдущий не был завершен выбором трека
+    user_state_manager.set_user_browsing_results(user_id, False, None, chat_id, topic_id)
+    
     # Если есть аргумент, используем его как запрос
     if command.args:
         query = command.args.strip()
@@ -241,6 +245,9 @@ async def handle_group_message(message: Message):
         
         # Сбрасываем состояние ожидания
         user_state_manager.set_user_waiting_for_query(user_id, False, chat_id, topic_id)
+        
+        # Сбрасываем предыдущее состояние просмотра результатов
+        user_state_manager.set_user_browsing_results(user_id, False, None, chat_id, topic_id)
         
         # Минимальная длина запроса
         if len(query) < 3:
