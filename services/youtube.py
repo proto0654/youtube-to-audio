@@ -113,6 +113,7 @@ def force_cleanup_downloads_folder():
 def enhance_metadata(metadata):
     """
     Улучшает метаданные трека, извлекая информацию из названия, если есть возможность.
+    Очищает названия треков от упоминаний каналов-источников.
     
     Args:
         metadata: Словарь с метаданными
@@ -163,7 +164,20 @@ def enhance_metadata(metadata):
         
         # Очищаем название от типичных суффиксов
         if metadata.get('title'):
-            suffixes = [
+            import re
+            
+            # Очищаем название от канала-источника в конце
+            channel_suffixes = [
+                r'\s*-\s*[^-\(\)\[\]]+$',  # "Title - Channel Name" в конце строки
+                r'\s*\|\s*[^|\(\)\[\]]+$',  # "Title | Channel Name" в конце строки
+                r'\s*•\s*[^•\(\)\[\]]+$',  # "Title • Channel Name" в конце строки
+            ]
+            
+            for pattern in channel_suffixes:
+                metadata['title'] = re.sub(pattern, '', metadata['title'], flags=re.IGNORECASE).strip()
+            
+            # Очищаем название от типичных меток видео
+            video_suffixes = [
                 r'\s*\(Official\s+Video\)', r'\s*\(Official\s+Music\s+Video\)', 
                 r'\s*\(Official\s+Audio\)', r'\s*\(Audio\)', r'\s*\(AUDIO\)',
                 r'\s*\(Lyric\s+Video\)', r'\s*\(Lyrics\)', r'\s*\(LYRICS\)',
@@ -171,12 +185,18 @@ def enhance_metadata(metadata):
                 r'\s*\(Video\s+Clip\)', r'\s*\(Clip\s+Officiel\)', r'\s*\(Videoclip\)',
                 r'\s*\(\d+\)', r'\s*\(\d+k\)', r'\s*\(4K\)',
                 r'\s*\[Official\s+Video\]', r'\s*\[Official\s+Music\s+Video\]',
-                r'\s*\[Audio\]', r'\s*\[AUDIO\]', r'\s*\[Lyrics\]', r'\s*\[LYRICS\]'
+                r'\s*\[Audio\]', r'\s*\[AUDIO\]', r'\s*\[Lyrics\]', r'\s*\[LYRICS\]',
+                r'\s*\(Full\s+HD\)', r'\s*\(Ultra\s+HD\)', r'\s*\(HQ\s+Audio\)',
+                r'\s*\(High\s+Quality\)', r'\s*\(Extended\s+Version\)', r'\s*\(Extended\)',
+                r'\s*\(Official\s+Video\s+HD\)\(Audio\s+HD\)'
             ]
             
-            import re
-            for suffix in suffixes:
+            for suffix in video_suffixes:
                 metadata['title'] = re.sub(suffix, '', metadata['title'], flags=re.IGNORECASE).strip()
+            
+            # Очищаем название от информации о канале в скобках
+            metadata['title'] = re.sub(r'\s*\([^)]*(?:[cC]hannel|[vV]evo|[oO]fficial|[mM]usic|[aA]udio).*\)', '', metadata['title']).strip()
+            metadata['title'] = re.sub(r'\s*\[[^]]*(?:[cC]hannel|[vV]evo|[oO]fficial|[mM]usic|[aA]udio).*\]', '', metadata['title']).strip()
                 
         return metadata
     except Exception as e:
@@ -186,7 +206,7 @@ def enhance_metadata(metadata):
 async def download_audio_from_youtube(url: str) -> tuple:
     """
     Скачивает аудио из YouTube видео и сохраняет в формате MP3.
-    Оптимизированная версия с быстрой загрузкой и получением метаданных.
+    Оптимизированная версия с быстрой загрузкой.
     
     Args:
         url: YouTube URL для скачивания
@@ -200,9 +220,9 @@ async def download_audio_from_youtube(url: str) -> tuple:
     # Инициализируем переменные заранее, чтобы они были доступны в блоке except
     audio_file_path = None
     metadata = {
-        'title': None,
-        'artist': None,
-        'album': None,
+        'title': 'Unknown Title',
+        'artist': 'Unknown Artist',
+        'album': 'YouTube Audio',
         'thumbnail': None,
         'duration': None
     }
@@ -224,40 +244,7 @@ async def download_audio_from_youtube(url: str) -> tuple:
         # Список файлов перед загрузкой
         before_files = set(os.listdir(DOWNLOADS_DIR))
         
-        # Получаем информацию о треке
-        info_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'skip_download': True,
-            'writeinfojson': False,
-            'writedescription': False
-        }
-        
-        try:
-            with yt_dlp.YoutubeDL(info_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                # Сохраняем метаданные
-                metadata['title'] = info.get('title', 'Unknown Title')
-                metadata['artist'] = info.get('artist') or info.get('uploader', 'Unknown Artist')
-                metadata['album'] = info.get('album', 'YouTube Audio')
-                metadata['thumbnail'] = info.get('thumbnail')
-                
-                # Форматируем длительность
-                duration_sec = info.get('duration')
-                if duration_sec:
-                    minutes = int(duration_sec) // 60
-                    seconds = int(duration_sec) % 60
-                    metadata['duration'] = f"{minutes}:{seconds:02d}"
-                
-                logger.info(f"Получены метаданные: {metadata['title']} - {metadata['artist']}")
-                
-                # Улучшаем полученные метаданные
-                metadata = enhance_metadata(metadata)
-        except Exception as e:
-            logger.warning(f"Не удалось получить метаданные: {e}")
-        
-        # Прямая оптимизированная загрузка аудио
+        # Прямая оптимизированная загрузка аудио с получением метаданных
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio/best',  # Предпочитаем m4a как более эффективный формат
             'postprocessors': [{
@@ -303,24 +290,25 @@ async def download_audio_from_youtube(url: str) -> tuple:
             }
         }
         
-        # Если у нас есть хорошие метаданные, добавляем их во время загрузки
-        if metadata['title'] and metadata['artist']:
-            # Расширяем существующие параметры, а не заменяем их полностью
-            meta_args = [
-                '-metadata', f'title={metadata["title"]}',
-                '-metadata', f'artist={metadata["artist"]}',
-                '-metadata', f'album={metadata["album"] or "YouTube Audio"}'
-            ]
-            
-            # Если postprocessor_args уже есть, добавляем к нему, иначе создаем новый
-            if 'postprocessor_args' in ydl_opts:
-                ydl_opts['postprocessor_args'].extend(meta_args)
-            else:
-                ydl_opts['postprocessor_args'] = meta_args
-        
-        logger.info("Запускаю оптимизированную загрузку аудио")
+        logger.info("Запускаю загрузку аудио")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            info = ydl.extract_info(url, download=True)
+            # Сохраняем метаданные после успешной загрузки
+            if info:
+                metadata['title'] = info.get('title', 'Unknown Title')
+                metadata['artist'] = info.get('artist') or info.get('uploader', 'Unknown Artist')
+                metadata['album'] = info.get('album', 'YouTube Audio')
+                metadata['thumbnail'] = info.get('thumbnail')
+                
+                # Форматируем длительность
+                duration_sec = info.get('duration')
+                if duration_sec:
+                    minutes = int(duration_sec) // 60
+                    seconds = int(duration_sec) % 60
+                    metadata['duration'] = f"{minutes}:{seconds:02d}"
+                
+                # Очищаем и улучшаем метаданные
+                metadata = enhance_metadata(metadata)
         
         # Ищем новые файлы после загрузки
         after_files = set(os.listdir(DOWNLOADS_DIR))

@@ -7,9 +7,12 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.types import FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.enums import ChatType
 
 from keyboards.inline import get_main_keyboard
 from services.youtube import search_youtube_music, download_audio_from_youtube, MAX_TELEGRAM_FILE_SIZE
+from services.user_state import user_state_manager
+from config import GROUP_MODE_ENABLED, TOPICS_MODE_ENABLED, is_allowed_chat
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -138,8 +141,8 @@ async def process_search_query(message: Message, state: FSMContext):
         )
         await state.clear()
 
-# Новая функция для отображения страницы результатов
-async def display_search_results_page(message_or_callback, pagination, edit_message=False):
+# Обновляем функцию для отображения страницы результатов
+async def display_search_results_page(message_or_callback, pagination, edit_message=False, is_reply=False):
     """
     Отображает страницу результатов поиска.
     
@@ -147,6 +150,7 @@ async def display_search_results_page(message_or_callback, pagination, edit_mess
         message_or_callback: Объект Message или CallbackQuery
         pagination: Объект пагинации
         edit_message: Редактировать ли существующее сообщение (для CallbackQuery)
+        is_reply: Отправлять ли результаты как ответ на сообщение (для групповых чатов)
     """
     # Получаем результаты для текущей страницы
     page_results = pagination.get_page_results()
@@ -164,20 +168,17 @@ async def display_search_results_page(message_or_callback, pagination, edit_mess
         duration = result['duration']
         result_type = result.get('type', 'song')
         
-        # Обрезаем слишком длинные названия
-        if len(title) > 40:
-            title = title[:40] + "..."
+        # Номер результата на глобальном уровне (с учетом страницы)
+        result_num = i + pagination.page * pagination.per_page
         
         # Добавляем иконку в зависимости от типа результата
         icon = "🎵" if result_type == "song" else "🎬"
         
-        # Номер результата на странице
-        result_num = i + pagination.page * pagination.per_page
-        
+        # Полное название для отображения в сообщении
         text += f"{result_num}. {icon} <b>{title}</b> - {artist} ({duration})\n"
         
-        # Создаем кнопку для скачивания
-        download_text = f"⬇️ {i}. {title[:20]}{'...' if len(title) > 20 else ''}"
+        # Создаем кнопку для скачивания с тем же номером, что и в списке
+        download_text = f"⬇️ {result_num}. {title}"
         keyboards.append([
             InlineKeyboardButton(
                 text=download_text,
@@ -204,80 +205,149 @@ async def display_search_results_page(message_or_callback, pagination, edit_mess
             )
         )
     
+    # Добавляем кнопки навигации, если они есть
     if navigation_buttons:
         keyboards.append(navigation_buttons)
     
-    # Добавляем кнопку поиска с другими параметрами
+    # Добавляем кнопки для нового поиска и возврата в меню
     keyboards.append([
-        InlineKeyboardButton(
-            text="🔎 Искать еще",
-            callback_data=f"new_search"
-        )
-    ])
-    
-    # Добавляем кнопку возврата
-    keyboards.append([
+        InlineKeyboardButton(text="🔍 Новый поиск", callback_data="new_search"),
         InlineKeyboardButton(text="↩️ К меню", callback_data="back_to_main")
     ])
     
-    # Отправляем или редактируем сообщение
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboards)
+    # Создаем клавиатуру
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboards)
     
-    if edit_message and isinstance(message_or_callback, CallbackQuery):
-        await message_or_callback.message.edit_text(text, reply_markup=markup)
+    # Отправляем результаты
+    if isinstance(message_or_callback, CallbackQuery):
+        # Для CallbackQuery
+        if edit_message:
+            await message_or_callback.message.edit_text(text, reply_markup=keyboard)
+        else:
+            await message_or_callback.message.answer(text, reply_markup=keyboard)
         await message_or_callback.answer()
     else:
-        if isinstance(message_or_callback, CallbackQuery):
-            await message_or_callback.message.answer(text, reply_markup=markup)
-            await message_or_callback.answer()
+        # Для Message
+        if is_reply:
+            # Отправляем сообщение как ответ (для группового чата)
+            await message_or_callback.reply(text, reply_markup=keyboard)
         else:
-            await message_or_callback.answer(text, reply_markup=markup)
+            # Обычная отправка сообщения
+            await message_or_callback.answer(text, reply_markup=keyboard)
 
 # Обработчики для навигации по страницам
-@router.callback_query(F.data == "search_next_page", SearchStates.browsing_results)
+@router.callback_query(F.data == "search_next_page")
 async def process_next_page(callback: CallbackQuery, state: FSMContext):
-    """Обработчик нажатия кнопки "Вперед" при просмотре результатов"""
-    # Получаем текущее состояние пагинации
-    data = await state.get_data()
-    pagination_dict = data.get('pagination', {})
-    pagination = SearchPagination(**pagination_dict)
+    """
+    Обработчик кнопки "Следующая страница" результатов поиска.
+    """
+    user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
+    chat_type = callback.message.chat.type
+    topic_id = callback.message.message_thread_id if TOPICS_MODE_ENABLED else None
     
-    # Переходим на следующую страницу, если она есть
-    if pagination.has_next_page():
+    # Проверяем, разрешен ли этот чат/топик
+    if chat_type in {ChatType.GROUP, ChatType.SUPERGROUP} and not is_allowed_chat(chat_id, topic_id):
+        await callback.answer("Доступ ограничен", show_alert=True)
+        return
+    
+    # Выбираем источник данных в зависимости от типа чата
+    if chat_type in {ChatType.GROUP, ChatType.SUPERGROUP} and GROUP_MODE_ENABLED:
+        # Для группового чата используем локальный менеджер состояний
+        if not user_state_manager.is_user_browsing_results(user_id, chat_id, topic_id):
+            await callback.answer("Поиск не найден. Пожалуйста, начните новый поиск.")
+            return
+            
+        pagination_data = user_state_manager.get_user_state(user_id, "search_results", {}, chat_id, topic_id)
+        pagination = SearchPagination(**pagination_data)
+        pagination.page += 1
+        user_state_manager.set_user_state(user_id, "search_results", pagination.__dict__, chat_id, topic_id)
+    else:
+        # Для приватного чата используем FSM
+        data = await state.get_data()
+        if 'pagination' not in data:
+            await callback.answer("Поиск не найден. Пожалуйста, начните новый поиск.")
+            return
+            
+        pagination = SearchPagination(**data['pagination'])
         pagination.page += 1
         await state.update_data(pagination=pagination.__dict__)
-        await display_search_results_page(callback, pagination, edit_message=True)
-    else:
-        await callback.answer("Это последняя страница")
-
-@router.callback_query(F.data == "search_prev_page", SearchStates.browsing_results)
-async def process_prev_page(callback: CallbackQuery, state: FSMContext):
-    """Обработчик нажатия кнопки "Назад" при просмотре результатов"""
-    # Получаем текущее состояние пагинации
-    data = await state.get_data()
-    pagination_dict = data.get('pagination', {})
-    pagination = SearchPagination(**pagination_dict)
     
-    # Переходим на предыдущую страницу, если она есть
-    if pagination.has_prev_page():
+    # Отображаем следующую страницу
+    await display_search_results_page(callback, pagination, edit_message=True)
+
+@router.callback_query(F.data == "search_prev_page")
+async def process_prev_page(callback: CallbackQuery, state: FSMContext):
+    """
+    Обработчик кнопки "Предыдущая страница" результатов поиска.
+    """
+    user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
+    chat_type = callback.message.chat.type
+    topic_id = callback.message.message_thread_id if TOPICS_MODE_ENABLED else None
+    
+    # Проверяем, разрешен ли этот чат/топик
+    if chat_type in {ChatType.GROUP, ChatType.SUPERGROUP} and not is_allowed_chat(chat_id, topic_id):
+        await callback.answer("Доступ ограничен", show_alert=True)
+        return
+    
+    # Выбираем источник данных в зависимости от типа чата
+    if chat_type in {ChatType.GROUP, ChatType.SUPERGROUP} and GROUP_MODE_ENABLED:
+        # Для группового чата используем локальный менеджер состояний
+        if not user_state_manager.is_user_browsing_results(user_id, chat_id, topic_id):
+            await callback.answer("Поиск не найден. Пожалуйста, начните новый поиск.")
+            return
+            
+        pagination_data = user_state_manager.get_user_state(user_id, "search_results", {}, chat_id, topic_id)
+        pagination = SearchPagination(**pagination_data)
+        pagination.page -= 1
+        user_state_manager.set_user_state(user_id, "search_results", pagination.__dict__, chat_id, topic_id)
+    else:
+        # Для приватного чата используем FSM
+        data = await state.get_data()
+        if 'pagination' not in data:
+            await callback.answer("Поиск не найден. Пожалуйста, начните новый поиск.")
+            return
+            
+        pagination = SearchPagination(**data['pagination'])
         pagination.page -= 1
         await state.update_data(pagination=pagination.__dict__)
-        await display_search_results_page(callback, pagination, edit_message=True)
-    else:
-        await callback.answer("Это первая страница")
+    
+    # Отображаем предыдущую страницу
+    await display_search_results_page(callback, pagination, edit_message=True)
 
 @router.callback_query(F.data == "new_search")
 async def process_new_search_callback(callback: CallbackQuery, state: FSMContext):
     """
-    Обработчик кнопки "Искать еще".
+    Обработчик кнопки "Новый поиск".
     """
-    await callback.answer()
-    await callback.message.answer(
-        "Введите новый запрос для поиска музыки:",
-    )
+    user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
+    chat_type = callback.message.chat.type
+    topic_id = callback.message.message_thread_id if TOPICS_MODE_ENABLED else None
     
-    # Устанавливаем состояние ожидания поискового запроса
-    await state.set_state(SearchStates.waiting_for_query)
+    # Проверяем, разрешен ли этот чат/топик
+    if chat_type in {ChatType.GROUP, ChatType.SUPERGROUP} and not is_allowed_chat(chat_id, topic_id):
+        await callback.answer("Доступ ограничен", show_alert=True)
+        return
+    
+    # Проверяем тип чата
+    if chat_type in {ChatType.GROUP, ChatType.SUPERGROUP} and GROUP_MODE_ENABLED:
+        # В групповом чате используем локальный менеджер состояний
+        user_state_manager.set_user_waiting_for_query(user_id, True, chat_id, topic_id)
+        user_state_manager.set_user_browsing_results(user_id, False, None, chat_id, topic_id)
+        
+        await callback.answer()
+        await callback.message.answer(
+            f"{callback.from_user.first_name}, введите запрос для поиска музыки:"
+        )
+    else:
+        # В приватном чате используем FSM
+        await callback.answer()
+        await callback.message.answer(
+            "Введите запрос для поиска музыки:"
+        )
+        await state.set_state(SearchStates.waiting_for_query)
 
 @router.callback_query(F.data.startswith("search_query:"))
 async def process_search_suggestion(callback: CallbackQuery, state: FSMContext):
@@ -329,19 +399,25 @@ async def process_search_suggestion(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("download:"))
 async def process_download_callback(callback: CallbackQuery):
     """
-    Обработчик выбора песни для скачивания.
+    Обработчик нажатия на кнопку скачивания трека из результатов поиска.
     """
-    video_id = callback.data.split(":")[1]
+    user_id = callback.from_user.id
+    user_name = callback.from_user.first_name
+    chat_type = callback.message.chat.type
+    is_group_chat = chat_type in {ChatType.GROUP, ChatType.SUPERGROUP}
+    
+    # Извлекаем ID видео из callback_data
+    video_id = callback.data.split(":", 1)[1]
+    logger.info(f"Пользователь {user_id} ({user_name}) выбрал для скачивания видео: {video_id}")
+    
+    # Формируем URL для скачивания
     url = f"https://www.youtube.com/watch?v={video_id}"
     
-    user_id = callback.from_user.id
-    logger.info(f"Пользователь {user_id} выбрал песню для скачивания: {url}")
-    
     # Отправляем уведомление о начале загрузки
-    await callback.answer("Начинаю загрузку...", show_alert=False)
+    await callback.answer("Начинаю загрузку аудио...")
     
-    # Сообщение с индикатором загрузки и информативным текстом
-    loading_message = await callback.message.answer(
+    # Отправляем сообщение о начале загрузки
+    loading_message = await (callback.message.reply if is_group_chat else callback.message.answer)(
         "⏳ <b>Загружаю аудио...</b>\n\n"
         "• Получение информации о треке\n"
         "• Выбор аудиопотока\n"
@@ -365,10 +441,10 @@ async def process_download_callback(callback: CallbackQuery):
         except Exception as download_error:
             logger.error(f"Ошибка при загрузке аудио: {download_error}")
             await loading_message.delete()
-            await callback.message.answer(
+            await (callback.message.reply if is_group_chat else callback.message.answer)(
                 f"❌ <b>Ошибка при загрузке аудио</b>\n\n"
                 f"Причина: {str(download_error)}\n\n"
-                f"Пожалуйста, попробуйте еще раз или выберите другую песню.",
+                f"Пожалуйста, попробуйте другой трек или используйте прямую ссылку на YouTube.",
                 reply_markup=get_main_keyboard()
             )
             return
@@ -376,30 +452,7 @@ async def process_download_callback(callback: CallbackQuery):
         if not file_path or not os.path.exists(file_path):
             raise FileNotFoundError(f"Файл не найден: {file_path}")
             
-        file_name = os.path.basename(file_path)
         file_size = os.path.getsize(file_path)
-        
-        # Более информативное сообщение при большом размере файла
-        if file_size > MAX_TELEGRAM_FILE_SIZE:
-            await loading_message.delete()
-            await callback.message.answer(
-                f"⚠️ <b>Файл слишком большой для отправки</b>\n\n"
-                f"Размер файла: <b>{file_size / 1024 / 1024:.1f} МБ</b>\n"
-                f"Лимит Telegram: <b>50 МБ</b>\n\n"
-                f"Пожалуйста, выберите другую песню, желательно короче по длительности.",
-                reply_markup=get_main_keyboard()
-            )
-            os.remove(file_path)
-            return
-        
-        # Создаем FSInputFile вместо открытия файла напрямую
-        audio_file = FSInputFile(file_path)
-        
-        # Подготавливаем обложку для Telegram, если она есть
-        thumbnail = None
-        if thumb_path and os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 0:
-            thumbnail = FSInputFile(thumb_path)
-            logger.info(f"Подготовлена обложка для Telegram: {thumb_path}")
         
         # Подготавливаем метаданные для отправки
         title = metadata.get('title', 'Unknown Title')
@@ -410,31 +463,64 @@ async def process_download_callback(callback: CallbackQuery):
         # Генерируем понятное название аудиофайла
         display_title = f"{artist} - {title}" if artist and artist != 'Unknown Artist' else title
         
+        # Добавляем информацию об отправителе для группового чата
+        sender_info = f"Запрос от: {user_name}\n" if is_group_chat else ""
+        
+        # Проверяем размер файла
+        if file_size > MAX_TELEGRAM_FILE_SIZE:
+            await loading_message.delete()
+            await (callback.message.reply if is_group_chat else callback.message.answer)(
+                f"⚠️ <b>Файл слишком большой для отправки</b>\n\n"
+                f"{sender_info}"
+                f"Размер файла: <b>{file_size / 1024 / 1024:.1f} МБ</b>\n"
+                f"Лимит Telegram: <b>50 МБ</b>\n\n"
+                f"Попробуйте трек с меньшей длительностью.",
+                reply_markup=get_main_keyboard()
+            )
+            # Удаляем файл
+            os.remove(file_path)
+            return
+        
         # Информативное сообщение о готовности аудио
         await loading_message.edit_text(
             f"✅ <b>Аудио готово к отправке!</b>\n\n"
+            f"{sender_info}"
             f"<b>Трек:</b> {title}\n"
             f"<b>Исполнитель:</b> {artist}\n"
             f"<b>Размер файла:</b> <b>{file_size / 1024 / 1024:.1f} МБ</b>\n\n"
             "<i>Отправляю файл...</i>"
         )
         
-        # Отправка аудио с метаданными
-        await callback.message.answer_audio(
-            audio=audio_file,
-            title=title,
-            performer=artist,
-            caption=f"✅ <b>Аудио успешно загружено!</b>\n\n"
-                   f"<b>{display_title}</b>\n"
-                   f"{duration if duration else ''}",
-            thumbnail=thumbnail,
-            reply_markup=get_main_keyboard()
+        # Создаем FSInputFile вместо открытия файла напрямую
+        audio_file = FSInputFile(file_path)
+        
+        # Подготавливаем обложку для Telegram, если она есть
+        thumbnail = None
+        if thumb_path and os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 0:
+            thumbnail = FSInputFile(thumb_path)
+            logger.info(f"Подготовлена обложка для Telegram: {thumb_path}")
+        
+        # Отправляем аудио пользователю
+        caption = (
+            f"Аудио успешно загружено\n"
+            f"Запрос от: Пользователь {user_name}"
         )
         
-        # Удаляем сообщение с индикатором загрузки
+        await callback.message.reply_audio(
+            audio=audio_file,
+            caption=caption,
+            title=metadata.get('title', 'Unknown Title'),
+            performer=metadata.get('artist', 'Unknown Artist'),
+            duration=int(metadata.get('duration_sec', 0)),
+            thumbnail=thumbnail,
+            reply_to_message_id=None if chat_type in ['group', 'supergroup'] else callback.message.message_id,
+            parse_mode="HTML"
+        )
+        
+        # Удаление сообщения о загрузке
         await loading_message.delete()
         
-        # Удаляем файлы после отправки
+        # Удаление файла после отправки
         try:
             # Попытка удаления аудиофайла с повторными попытками
             file_deleted = False
@@ -471,12 +557,12 @@ async def process_download_callback(callback: CallbackQuery):
             logger.warning(f"Ошибка при очистке файлов: {e}")
         
     except Exception as e:
-        logger.error(f"Ошибка при скачивании аудио: {e}")
+        logger.error(f"Ошибка при обработке запроса на скачивание: {e}")
         await loading_message.delete()
-        await callback.message.answer(
+        await (callback.message.reply if is_group_chat else callback.message.answer)(
             f"❌ <b>Ошибка при загрузке аудио</b>\n\n"
             f"Причина: {str(e)}\n\n"
-            f"Пожалуйста, попробуйте еще раз или выберите другую песню.",
+            f"Пожалуйста, попробуйте другой трек или используйте прямую ссылку на YouTube.",
             reply_markup=get_main_keyboard()
         )
 

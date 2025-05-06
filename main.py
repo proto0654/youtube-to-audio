@@ -6,7 +6,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, GROUP_MODE_ENABLED
 from handlers import routers
 from services.youtube import force_cleanup_downloads_folder
 
@@ -25,6 +25,11 @@ async def main():
         stream=sys.stdout,
     )
     logger.info("Запуск бота...")
+    
+    if GROUP_MODE_ENABLED:
+        logger.info("Режим групповых чатов ВКЛЮЧЕН")
+    else:
+        logger.info("Режим групповых чатов ОТКЛЮЧЕН")
 
     # Принудительная очистка папки загрузок при запуске
     force_cleanup_downloads_folder()
@@ -44,9 +49,13 @@ async def main():
     for router in routers:
         dp.include_router(router)
     
+    # Получаем информацию о боте и выводим в лог
+    bot_info = await bot.get_me()
+    logger.info(f"Бот запущен как @{bot_info.username} (ID: {bot_info.id})")
+    
     # Пропуск накопившихся апдейтов и запуск поллинга
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("Бот успешно запущен")
+    logger.info("Бот успешно запущен и готов к работе")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

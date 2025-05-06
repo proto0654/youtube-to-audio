@@ -3,4 +3,6 @@ yt-dlp==2025.4.30
 imageio-ffmpeg==0.6.0
 ytmusicapi==1.10.3
 python-dotenv==1.1.0
-requests==2.31.0 
+requests==2.31.0
+typing-extensions>=4.8.0
+cachetools>=5.3.1 
