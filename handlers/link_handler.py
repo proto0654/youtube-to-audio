@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import time
+import asyncio
 from aiogram import Router, F
 from aiogram.types import Message, FSInputFile
 from aiogram.enums import ChatType
@@ -16,75 +17,25 @@ router = Router()
 # Регулярное выражение для проверки YouTube ссылок
 YOUTUBE_REGEX = r"(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\/(?:watch\?v=)?([^\s&]+)"
 
-# Обработчик команды /link для обоих типов чатов
-@router.message(Command("link"))
-async def cmd_link(message: Message):
-    """
-    Обработчик команды /link.
-    Запрашивает у пользователя ссылку на YouTube видео.
-    """
-    user_id = message.from_user.id
-    user_name = message.from_user.first_name
-    chat_id = message.chat.id
-    chat_type = message.chat.type
-    topic_id = message.message_thread_id if TOPICS_MODE_ENABLED else None
-    
-    # Проверка для групповых чатов
-    if chat_type in {ChatType.GROUP, ChatType.SUPERGROUP}:
-        if not GROUP_MODE_ENABLED:
-            return
-        if not is_allowed_chat(chat_id, topic_id):
-            logger.info(f"Команда /link отклонена в группе {chat_id} (топик: {topic_id}) от пользователя {user_id}")
-            return
-    
-    logger.info(f"Пользователь {user_id} ({user_name}) использовал команду /link в чате {chat_id} (топик: {topic_id})")
-    
-    # Ответ зависит от типа чата
-    is_group_chat = chat_type in {ChatType.GROUP, ChatType.SUPERGROUP}
-    await (message.reply if is_group_chat else message.answer)(
-        "Пришлите ссылку на YouTube видео, и я скачаю из него аудио."
-    )
+# Словарь для отслеживания активных задач обработки по чатам
+active_tasks = {}
 
-@router.message(F.text.regexp(YOUTUBE_REGEX))
-async def process_youtube_link(message: Message, is_group_chat=False, topic_id=None):
+# Функция для обработки скачивания и отправки аудио
+async def process_and_send_audio(message, url, loading_message, is_group_chat, user_name):
     """
-    Обработчик сообщений с YouTube ссылками.
-    Скачивает аудио и отправляет его пользователю.
+    Асинхронная функция для скачивания и отправки аудио пользователю.
+    Запускается как отдельная задача, чтобы не блокировать основной поток обработки сообщений.
     
     Args:
-        message: Сообщение с YouTube ссылкой
-        is_group_chat: Флаг, указывающий, что обработка происходит в групповом чате
-        topic_id: ID темы/топика, если сообщение в топике
+        message: Исходное сообщение с YouTube ссылкой
+        url: URL для скачивания
+        loading_message: Сообщение-индикатор загрузки
+        is_group_chat: Флаг группового чата
+        user_name: Имя пользователя для сообщений
     """
     chat_id = message.chat.id
-    user_id = message.from_user.id
-    user_name = message.from_user.first_name
-    url = message.text.strip()
-    chat_type = message.chat.type
-    
-    # Определяем, является ли чат групповым
-    if chat_type in {ChatType.GROUP, ChatType.SUPERGROUP}:
-        is_group_chat = True
-    
-    # Если это групповой чат с топиками, получаем ID топика
-    if is_group_chat and TOPICS_MODE_ENABLED and not topic_id:
-        topic_id = message.message_thread_id
-    
-    # Проверяем, разрешен ли этот чат/топик
-    if is_group_chat and not is_allowed_chat(chat_id, topic_id):
-        logger.info(f"Ссылка отклонена в чате {chat_id} (топик: {topic_id}) от пользователя {user_id}")
-        return
-    
-    logger.info(f"Пользователь {user_id} ({user_name}) отправил YouTube ссылку в чате {chat_id} (топик: {topic_id}): {url}")
-    
-    # Отправка сообщения о начале загрузки
-    loading_message = await (message.reply if is_group_chat else message.answer)(
-        "⏳ <b>Загружаю аудио...</b>\n\n"
-        "• Получение информации о треке\n"
-        "• Выбор аудиопотока\n"
-        "• Загрузка и конвертация\n\n"
-        "<i>Пожалуйста, подождите. Это может занять 10-30 секунд...</i>"
-    )
+    file_path = None
+    thumb_path = None
     
     try:
         # Скачивание аудио и получение метаданных
@@ -167,7 +118,7 @@ async def process_youtube_link(message: Message, is_group_chat=False, topic_id=N
             title=title,
             performer=artist,
             caption=f"✅ <b>Аудио успешно загружено!</b>\n\n"
-                   f"{sender_info}",
+                  f"{sender_info}",
             thumbnail=thumbnail,
             reply_markup=get_main_keyboard()
         )
@@ -219,4 +170,94 @@ async def process_youtube_link(message: Message, is_group_chat=False, topic_id=N
             f"Причина: {str(e)}\n\n"
             f"Пожалуйста, проверьте ссылку и попробуйте еще раз.",
             reply_markup=get_main_keyboard()
-        ) 
+        )
+    finally:
+        # Удаляем задачу из словаря активных задач
+        user_id = message.from_user.id
+        task_key = f"{chat_id}_{user_id}"
+        if task_key in active_tasks:
+            active_tasks.pop(task_key, None)
+
+@router.message(F.text.regexp(YOUTUBE_REGEX))
+async def process_youtube_link(message: Message, is_group_chat=False, topic_id=None):
+    """
+    Обработчик сообщений с YouTube ссылками.
+    Создает асинхронную задачу для скачивания аудио и отправки его пользователю.
+    
+    Args:
+        message: Сообщение с YouTube ссылкой
+        is_group_chat: Флаг, указывающий, что обработка происходит в групповом чате
+        topic_id: ID темы/топика, если сообщение в топике
+    """
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    user_name = message.from_user.first_name
+    url = message.text.strip()
+    chat_type = message.chat.type
+    
+    # Определяем, является ли чат групповым
+    if chat_type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        is_group_chat = True
+    
+    # Если это групповой чат с топиками, получаем ID топика
+    if is_group_chat and TOPICS_MODE_ENABLED and not topic_id:
+        topic_id = message.message_thread_id
+    
+    # Проверяем, разрешен ли этот чат/топик
+    if is_group_chat and not is_allowed_chat(chat_id, topic_id):
+        logger.info(f"Ссылка отклонена в чате {chat_id} (топик: {topic_id}) от пользователя {user_id}")
+        return
+    
+    logger.info(f"Пользователь {user_id} ({user_name}) отправил YouTube ссылку в чате {chat_id} (топик: {topic_id}): {url}")
+    
+    # Отправка сообщения о начале загрузки
+    loading_message = await (message.reply if is_group_chat else message.answer)(
+        "⏳ <b>Загружаю аудио...</b>\n\n"
+        "• Получение информации о треке\n"
+        "• Выбор аудиопотока\n"
+        "• Загрузка и конвертация\n\n"
+        "<i>Пожалуйста, подождите. Это может занять 10-30 секунд...</i>"
+    )
+    
+    # Создаем ключ для отслеживания задачи
+    task_key = f"{chat_id}_{user_id}"
+    
+    # Создаем асинхронную задачу обработки
+    task = asyncio.create_task(
+        process_and_send_audio(message, url, loading_message, is_group_chat, user_name)
+    )
+    
+    # Сохраняем задачу в словаре активных задач
+    active_tasks[task_key] = task
+    
+    # Не ожидаем завершения задачи - она выполнится в фоне
+    logger.info(f"Запущена асинхронная обработка YouTube ссылки для {user_id} в чате {chat_id}")
+
+# Обработчик команды /link для обоих типов чатов
+@router.message(Command("link"))
+async def cmd_link(message: Message):
+    """
+    Обработчик команды /link.
+    Запрашивает у пользователя ссылку на YouTube видео.
+    """
+    user_id = message.from_user.id
+    user_name = message.from_user.first_name
+    chat_id = message.chat.id
+    chat_type = message.chat.type
+    topic_id = message.message_thread_id if TOPICS_MODE_ENABLED else None
+    
+    # Проверка для групповых чатов
+    if chat_type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        if not GROUP_MODE_ENABLED:
+            return
+        if not is_allowed_chat(chat_id, topic_id):
+            logger.info(f"Команда /link отклонена в группе {chat_id} (топик: {topic_id}) от пользователя {user_id}")
+            return
+    
+    logger.info(f"Пользователь {user_id} ({user_name}) использовал команду /link в чате {chat_id} (топик: {topic_id})")
+    
+    # Ответ зависит от типа чата
+    is_group_chat = chat_type in {ChatType.GROUP, ChatType.SUPERGROUP}
+    await (message.reply if is_group_chat else message.answer)(
+        "Пришлите ссылку на YouTube видео, и я скачаю из него аудио."
+    ) 

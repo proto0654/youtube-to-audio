@@ -9,6 +9,7 @@ import uuid
 import time
 import datetime
 import requests
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -291,26 +292,33 @@ async def download_audio_from_youtube(url: str) -> tuple:
             }
         }
         
-        logger.info("Запускаю загрузку аудио")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            # Сохраняем метаданные после успешной загрузки
-            if info:
-                metadata['title'] = info.get('title', 'Unknown Title')
-                metadata['artist'] = info.get('artist') or info.get('uploader', 'Unknown Artist')
-                metadata['album'] = info.get('album', 'YouTube Audio')
-                metadata['thumbnail'] = info.get('thumbnail')
-                metadata['channel'] = info.get('channel') or info.get('uploader', '')
-                
-                # Форматируем длительность
-                duration_sec = info.get('duration')
-                if duration_sec:
-                    minutes = int(duration_sec) // 60
-                    seconds = int(duration_sec) % 60
-                    metadata['duration'] = f"{minutes}:{seconds:02d}"
-                
-                # Всегда очищаем метаданные
-                metadata = enhance_metadata(metadata)
+        # Определяем функцию для скачивания в отдельном потоке
+        def download_in_thread():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                return info
+        
+        logger.info("Запускаю загрузку аудио в отдельном потоке")
+        # Запускаем скачивание в отдельном потоке с помощью asyncio.to_thread
+        info = await asyncio.to_thread(download_in_thread)
+        
+        # Сохраняем метаданные после успешной загрузки
+        if info:
+            metadata['title'] = info.get('title', 'Unknown Title')
+            metadata['artist'] = info.get('artist') or info.get('uploader', 'Unknown Artist')
+            metadata['album'] = info.get('album', 'YouTube Audio')
+            metadata['thumbnail'] = info.get('thumbnail')
+            metadata['channel'] = info.get('channel') or info.get('uploader', '')
+            
+            # Форматируем длительность
+            duration_sec = info.get('duration')
+            if duration_sec:
+                minutes = int(duration_sec) // 60
+                seconds = int(duration_sec) % 60
+                metadata['duration'] = f"{minutes}:{seconds:02d}"
+            
+            # Всегда очищаем метаданные
+            metadata = enhance_metadata(metadata)
         
         # Ищем новые файлы после загрузки
         after_files = set(os.listdir(DOWNLOADS_DIR))
