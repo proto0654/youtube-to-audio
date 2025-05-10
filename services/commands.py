@@ -16,7 +16,6 @@ async def set_commands(bot: Bot) -> None:
     # Команды для приватных чатов
     private_commands = [
         BotCommand(command="start", description="Запустить бота"),
-        BotCommand(command="help", description="Показать справку"),
         BotCommand(command="search", description="Поиск музыки на YouTube"),
         BotCommand(command="link", description="Отправить YouTube ссылку")
     ]
@@ -24,10 +23,8 @@ async def set_commands(bot: Bot) -> None:
     # Команды для групповых чатов
     group_commands = [
         BotCommand(command="start", description="Запустить бота в группе"),
-        BotCommand(command="help", description="Показать справку по командам"),
         BotCommand(command="search", description="Поиск музыки на YouTube"),
-        BotCommand(command="mystate", description="Проверить ваше состояние"),
-        BotCommand(command="clearstate", description="Сбросить ваше состояние")
+        BotCommand(command="link", description="Отправить YouTube ссылку")
     ]
     
     # Регистрация команд для приватных чатов
@@ -46,10 +43,10 @@ async def set_commands(bot: Bot) -> None:
         logger.info("Команды для групповых чатов установлены")
     
     # Устанавливаем команды по умолчанию для всех чатов
-    default_commands = private_commands if not GROUP_MODE_ENABLED else [
+    default_commands = [
         BotCommand(command="start", description="Запустить бота"),
-        BotCommand(command="help", description="Показать справку"),
-        BotCommand(command="search", description="Поиск музыки на YouTube")
+        BotCommand(command="search", description="Поиск музыки на YouTube"),
+        BotCommand(command="link", description="Отправить YouTube ссылку")
     ]
     
     await bot.set_my_commands(

@@ -48,35 +48,7 @@ async def cmd_start_group(message: Message):
         f"В групповом чате{topic_info} я работаю так:\n"
         f"• Пришлите мне ссылку на YouTube видео, и я скачаю из него аудио\n"
         f"• Используйте команду /search для поиска музыки\n"
-        f"• Используйте команду /help для получения справки"
-    )
-    
-    await message.answer(text)
-
-@router.message(Command("help"), F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
-async def cmd_help_group(message: Message):
-    """
-    Обработчик команды /help для групповых чатов.
-    """
-    if not GROUP_MODE_ENABLED:
-        return
-    
-    chat_id = message.chat.id
-    topic_id = message.message_thread_id if TOPICS_MODE_ENABLED else None
-    
-    # Проверяем, разрешен ли этот чат/топик
-    if not is_allowed_chat(chat_id, topic_id):
-        return
-    
-    topic_info = f" в топике {topic_id}" if topic_id is not None else ""
-    text = (
-        f"📚 <b>Справка по командам бота{topic_info}:</b>\n\n"
-        f"• <b>/start</b> - Начать работу с ботом\n"
-        f"• <b>/help</b> - Показать эту справку\n"
-        f"• <b>/search [запрос]</b> - Поиск музыки по запросу\n"
-        f"• <b>/mystate</b> - Проверить ваше текущее состояние\n"
-        f"• <b>/clearstate</b> - Сбросить ваше состояние\n\n"
-        f"Также вы можете просто отправить ссылку на YouTube видео, и я автоматически скачаю из него аудио."
+        f"• Используйте команду /link для отправки ссылки на YouTube"
     )
     
     await message.answer(text)
@@ -164,60 +136,6 @@ async def cmd_search_group(message: Message, command: CommandObject):
         await message.reply(
             f"{user_name}, введите запрос для поиска музыки в YouTube Music:"
         )
-
-@router.message(Command("mystate"), F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
-async def cmd_mystate_group(message: Message):
-    """
-    Показывает текущее состояние пользователя.
-    """
-    if not GROUP_MODE_ENABLED:
-        return
-    
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    user_name = message.from_user.first_name
-    topic_id = message.message_thread_id if TOPICS_MODE_ENABLED else None
-    
-    # Проверяем, разрешен ли этот чат/топик
-    if not is_allowed_chat(chat_id, topic_id):
-        return
-    
-    waiting_for_query = user_state_manager.is_user_waiting_for_query(user_id, chat_id, topic_id)
-    browsing_results = user_state_manager.is_user_browsing_results(user_id, chat_id, topic_id)
-    requests_count = user_state_manager.get_user_requests_count(user_id)
-    
-    topic_info = f" в топике {topic_id}" if topic_id is not None else ""
-    status_text = (
-        f"🔄 <b>Текущее состояние для {user_name}{topic_info}:</b>\n\n"
-        f"• Ожидание поискового запроса: {'✅' if waiting_for_query else '❌'}\n"
-        f"• Просмотр результатов поиска: {'✅' if browsing_results else '❌'}\n"
-        f"• Использовано запросов: {requests_count}/{MAX_REQUESTS_PER_USER} за последний час"
-    )
-    
-    await message.reply(status_text)
-
-@router.message(Command("clearstate"), F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
-async def cmd_clearstate_group(message: Message):
-    """
-    Сбрасывает текущее состояние пользователя.
-    """
-    if not GROUP_MODE_ENABLED:
-        return
-    
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    user_name = message.from_user.first_name
-    topic_id = message.message_thread_id if TOPICS_MODE_ENABLED else None
-    
-    # Проверяем, разрешен ли этот чат/топик
-    if not is_allowed_chat(chat_id, topic_id):
-        return
-    
-    user_state_manager.clear_user_state(user_id, None, chat_id, topic_id)
-    logger.info(f"Сброшено состояние пользователя {user_id} ({user_name}) в чате {chat_id} (топик: {topic_id})")
-    
-    topic_info = f" в топике {topic_id}" if topic_id is not None else ""
-    await message.reply(f"✅ {user_name}, ваши состояния{topic_info} сброшены.")
 
 @router.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
 async def handle_group_message(message: Message):
@@ -350,7 +268,7 @@ async def bot_added_to_group(event: ChatMemberUpdated):
             f"Вы можете:\n"
             f"• Прислать мне ссылку на YouTube видео, и я скачаю из него аудио\n"
             f"• Использовать команду /search для поиска музыки\n"
-            f"• Использовать команду /help для получения справки{topic_info}\n\n"
+            f"• Использовать команду /link для отправки ссылки на YouTube{topic_info}\n\n"
             f"Рад быть полезным! 🎵"
         )
 

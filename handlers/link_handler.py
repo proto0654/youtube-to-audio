@@ -68,12 +68,12 @@ async def process_and_send_audio(message, url, loading_message, is_group_chat, u
         
         # Подготавливаем метаданные для отправки
         title = metadata.get('title', 'Unknown Title')
-        artist = metadata.get('artist', 'Unknown Artist')
+        artist = metadata.get('artist', '')
         album = metadata.get('album', 'YouTube Audio')
         duration = metadata.get('duration', None)
         
-        # Генерируем понятное название аудиофайла
-        display_title = f"{artist} - {title}" if artist and artist != 'Unknown Artist' else title
+        # Генерируем понятное название аудиофайла без артиста, если его нет или это "Unknown Artist"
+        display_title = title
         
         # Добавляем информацию об отправителе для группового чата
         sender_info = f"Запрос от: {user_name}\n" if is_group_chat else ""
@@ -94,14 +94,15 @@ async def process_and_send_audio(message, url, loading_message, is_group_chat, u
             return
         
         # Информативное сообщение о готовности аудио
-        await loading_message.edit_text(
-            f"✅ <b>Аудио готово к отправке!</b>\n\n"
-            f"{sender_info}"
-            f"<b>Трек:</b> {title}\n"
-            f"<b>Исполнитель:</b> {artist}\n"
-            f"<b>Размер файла:</b> <b>{file_size / 1024 / 1024:.1f} МБ</b>\n\n"
-            "<i>Отправляю файл...</i>"
-        )
+        info_message = f"✅ <b>Аудио готово к отправке!</b>\n\n{sender_info}<b>Трек:</b> {title}\n"
+        
+        # Добавляем информацию об исполнителе только если он есть
+        if artist and artist != 'Unknown Artist':
+            info_message += f"<b>Исполнитель:</b> {artist}\n"
+            
+        info_message += f"<b>Размер файла:</b> <b>{file_size / 1024 / 1024:.1f} МБ</b>\n\n<i>Отправляю файл...</i>"
+        
+        await loading_message.edit_text(info_message)
         
         # Создаем FSInputFile вместо открытия файла напрямую
         audio_file = FSInputFile(file_path)
@@ -112,13 +113,17 @@ async def process_and_send_audio(message, url, loading_message, is_group_chat, u
             thumbnail = FSInputFile(thumb_path)
             logger.info(f"Подготовлена обложка для Telegram: {thumb_path}")
         
+        # Определяем, нужно ли отправлять performer (исполнителя) в аудио
+        performer = None
+        if artist and artist != 'Unknown Artist':
+            performer = artist
+            
         # Отправка аудио пользователю - используем reply в групповом чате
         await (message.reply_audio if is_group_chat else message.answer_audio)(
             audio=audio_file,
             title=title,
-            performer=artist,
-            caption=f"✅ <b>Аудио успешно загружено!</b>\n\n"
-                  f"{sender_info}",
+            performer=performer,
+            caption=f"✅ <b>Аудио успешно загружено!</b>\n\n{sender_info}",
             thumbnail=thumbnail,
             reply_markup=get_main_keyboard()
         )

@@ -114,7 +114,6 @@ def force_cleanup_downloads_folder():
 def enhance_metadata(metadata):
     """
     Улучшает метаданные трека, извлекая информацию из названия, если есть возможность.
-    Очищает названия треков от упоминаний каналов-источников и убирает имя канала из начала/конца.
     
     Args:
         metadata: Словарь с метаданными
@@ -123,10 +122,8 @@ def enhance_metadata(metadata):
         dict: Улучшенные метаданные
     """
     try:
-        import re
         title = metadata.get('title', '')
         artist = metadata.get('artist', '')
-        channel = metadata.get('channel') or metadata.get('uploader', '')
         
         # Если у нас есть название и нет исполнителя, пробуем его извлечь из названия
         if title and (not artist or artist == 'Unknown Artist'):
@@ -139,67 +136,6 @@ def enhance_metadata(metadata):
                         metadata['title'] = parts[1].strip()
                         break
         
-        # Удаляем имя канала из начала или конца названия
-        if channel and metadata.get('title'):
-            # В начале
-            pattern_start = rf'^{re.escape(channel)}[\s\-:|•]*'
-            # В конце
-            pattern_end = rf'[\s\-:|•]*{re.escape(channel)}$'
-            metadata['title'] = re.sub(pattern_start, '', metadata['title'], flags=re.IGNORECASE).strip()
-            metadata['title'] = re.sub(pattern_end, '', metadata['title'], flags=re.IGNORECASE).strip()
-        
-        # Если у нас до сих пор нет исполнителя, пробуем извлечь его из названия, если есть "by", "feat", "ft."
-        if (not metadata.get('artist') or metadata.get('artist') == 'Unknown Artist') and title:
-            patterns = [
-                r'(?i)by\s+([^()\[\]|]+)(?:\s*\(|\s*\[|\s*$|\s*\|)',  # "by Artist"
-                r'(?i)feat(?:\.|\s)\s*([^()\[\]|]+)(?:\s*\(|\s*\[|\s*$|\s*\|)',  # "feat. Artist"
-                r'(?i)ft(?:\.|\s)\s*([^()\[\]|]+)(?:\s*\(|\s*\[|\s*$|\s*\|)',  # "ft. Artist"
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, title)
-                if match:
-                    artist_name = match.group(1).strip()
-                    if artist_name:
-                        metadata['artist'] = artist_name
-                        # Удаляем эту часть из названия
-                        title = re.sub(pattern, '', title).strip()
-                        metadata['title'] = title
-                        logger.info(f"Извлечен исполнитель '{metadata['artist']}' из названия трека по паттерну")
-                        break
-        
-        # Очищаем название от типичных суффиксов
-        if metadata.get('title'):
-            # Очищаем название от канала-источника в конце
-            channel_suffixes = [
-                r'\s*-\s*[^-\(\)\[\]]+$',  # "Title - Channel Name" в конце строки
-                r'\s*\|\s*[^|\(\)\[\]]+$',  # "Title | Channel Name" в конце строки
-                r'\s*•\s*[^•\(\)\[\]]+$',  # "Title • Channel Name" в конце строки
-            ]
-            for pattern in channel_suffixes:
-                metadata['title'] = re.sub(pattern, '', metadata['title'], flags=re.IGNORECASE).strip()
-            
-            # Очищаем название от типичных меток видео
-            video_suffixes = [
-                r'\s*\(Official\s+Video\)', r'\s*\(Official\s+Music\s+Video\)', 
-                r'\s*\(Official\s+Audio\)', r'\s*\(Audio\)', r'\s*\(AUDIO\)',
-                r'\s*\(Lyric\s+Video\)', r'\s*\(Lyrics\)', r'\s*\(LYRICS\)',
-                r'\s*\(Official\s+Lyric\s+Video\)', r'\s*\(HD\)', r'\s*\(HQ\)',
-                r'\s*\(Video\s+Clip\)', r'\s*\(Clip\s+Officiel\)', r'\s*\(Videoclip\)',
-                r'\s*\(\d+\)', r'\s*\(\d+k\)', r'\s*\(4K\)',
-                r'\s*\[Official\s+Video\]', r'\s*\[Official\s+Music\s+Video\]',
-                r'\s*\[Audio\]', r'\s*\[AUDIO\]', r'\s*\[Lyrics\]', r'\s*\[LYRICS\]',
-                r'\s*\(Full\s+HD\)', r'\s*\(Ultra\s+HD\)', r'\s*\(HQ\s+Audio\)',
-                r'\s*\(High\s+Quality\)', r'\s*\(Extended\s+Version\)', r'\s*\(Extended\)',
-                r'\s*\(Official\s+Video\s+HD\)\(Audio\s+HD\)'
-            ]
-            for suffix in video_suffixes:
-                metadata['title'] = re.sub(suffix, '', metadata['title'], flags=re.IGNORECASE).strip()
-            
-            # Очищаем название от информации о канале в скобках
-            metadata['title'] = re.sub(r'\s*\([^)]*(?:[cC]hannel|[vV]evo|[oO]fficial|[mM]usic|[aA]udio).*\)', '', metadata['title']).strip()
-            metadata['title'] = re.sub(r'\s*\[[^]]*(?:[cC]hannel|[vV]evo|[oO]fficial|[mM]usic|[aA]udio).*\]', '', metadata['title']).strip()
-                
         return metadata
     except Exception as e:
         logger.warning(f"Ошибка при улучшении метаданных: {e}")
@@ -305,7 +241,8 @@ async def download_audio_from_youtube(url: str) -> tuple:
         # Сохраняем метаданные после успешной загрузки
         if info:
             metadata['title'] = info.get('title', 'Unknown Title')
-            metadata['artist'] = info.get('artist') or info.get('uploader', 'Unknown Artist')
+            # Не используем название канала в качестве артиста
+            metadata['artist'] = info.get('artist', '') or ''
             metadata['album'] = info.get('album', 'YouTube Audio')
             metadata['thumbnail'] = info.get('thumbnail')
             metadata['channel'] = info.get('channel') or info.get('uploader', '')
@@ -316,6 +253,7 @@ async def download_audio_from_youtube(url: str) -> tuple:
                 minutes = int(duration_sec) // 60
                 seconds = int(duration_sec) % 60
                 metadata['duration'] = f"{minutes}:{seconds:02d}"
+                metadata['duration_sec'] = duration_sec
             
             # Всегда очищаем метаданные
             metadata = enhance_metadata(metadata)
@@ -470,14 +408,8 @@ async def search_youtube_music(query: str, limit: int = 0) -> list:
             title = result.get('title', 'Unknown Title')
             result_type = result.get('resultType', 'song')
             
-            # Определяем исполнителя наиболее простым способом
-            artist = 'Unknown'
-            if 'artists' in result and isinstance(result['artists'], list) and result['artists']:
-                artist_names = [a.get('name', '') for a in result['artists'] if a.get('name')]
-                if artist_names:
-                    artist = ', '.join(artist_names)
-                elif 'artist' in result:
-                    artist = result['artist']
+            # Пропускаем использование названия артиста из результата поиска
+            artist = ''
             
             # Получаем длительность
             duration = result.get('duration', 'Unknown')
@@ -588,7 +520,8 @@ async def search_youtube_with_ytdlp(query: str, limit: int = 0) -> list:
                         # Проверяем, что это видео, а не плейлист
                         if entry.get('_type') != 'playlist' and entry.get('id'):
                             title = entry.get('title', 'Unknown Title')
-                            channel = entry.get('channel', 'Unknown Artist')
+                            # Не используем название канала
+                            artist = ''
                             duration_sec = entry.get('duration')
                             
                             # Форматируем длительность
@@ -610,7 +543,7 @@ async def search_youtube_with_ytdlp(query: str, limit: int = 0) -> list:
                             # Форматируем для соответствия формату YTMusic API
                             results.append({
                                 'title': title,
-                                'artist': channel,
+                                'artist': artist,
                                 'duration': duration,
                                 'videoId': entry.get('id'),
                                 'url': f"https://www.youtube.com/watch?v={entry.get('id')}",

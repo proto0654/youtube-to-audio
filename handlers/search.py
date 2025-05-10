@@ -109,12 +109,12 @@ async def process_and_send_audio_download(callback, url, loading_message, is_gro
         
         # Подготавливаем метаданные для отправки
         title = metadata.get('title', 'Unknown Title')
-        artist = metadata.get('artist', 'Unknown Artist')
+        artist = metadata.get('artist', '')
         album = metadata.get('album', 'YouTube Audio')
         duration = metadata.get('duration', None)
         
-        # Генерируем понятное название аудиофайла
-        display_title = f"{artist} - {title}" if artist and artist != 'Unknown Artist' else title
+        # Генерируем понятное название аудиофайла без артиста, если его нет или это "Unknown Artist"
+        display_title = title
         
         # Добавляем информацию об отправителе для группового чата
         sender_info = f"Запрос от: {user_name}\n" if is_group_chat else ""
@@ -135,14 +135,15 @@ async def process_and_send_audio_download(callback, url, loading_message, is_gro
             return
         
         # Информативное сообщение о готовности аудио
-        await loading_message.edit_text(
-            f"✅ <b>Аудио готово к отправке!</b>\n\n"
-            f"{sender_info}"
-            f"<b>Трек:</b> {title}\n"
-            f"<b>Исполнитель:</b> {artist}\n"
-            f"<b>Размер файла:</b> <b>{file_size / 1024 / 1024:.1f} МБ</b>\n\n"
-            "<i>Отправляю файл...</i>"
-        )
+        info_message = f"✅ <b>Аудио готово к отправке!</b>\n\n{sender_info}<b>Трек:</b> {title}\n"
+        
+        # Добавляем информацию об исполнителе только если он есть
+        if artist and artist != 'Unknown Artist':
+            info_message += f"<b>Исполнитель:</b> {artist}\n"
+            
+        info_message += f"<b>Размер файла:</b> <b>{file_size / 1024 / 1024:.1f} МБ</b>\n\n<i>Отправляю файл...</i>"
+        
+        await loading_message.edit_text(info_message)
         
         # Создаем FSInputFile вместо открытия файла напрямую
         audio_file = FSInputFile(file_path)
@@ -154,16 +155,18 @@ async def process_and_send_audio_download(callback, url, loading_message, is_gro
             logger.info(f"Подготовлена обложка для Telegram: {thumb_path}")
         
         # Отправляем аудио пользователю
-        caption = (
-            f"Аудио успешно загружено\n"
-            f"Запрос от: Пользователь {user_name}"
-        )
+        caption = f"Аудио успешно загружено\nЗапрос от: Пользователь {user_name}"
         
+        # Определяем, нужно ли отправлять performer (исполнителя) в аудио
+        performer = None
+        if artist and artist != 'Unknown Artist':
+            performer = artist
+            
         await callback.message.reply_audio(
             audio=audio_file,
             caption=caption,
-            title=metadata.get('title', 'Unknown Title'),
-            performer=metadata.get('artist', 'Unknown Artist'),
+            title=title,
+            performer=performer,
             duration=int(metadata.get('duration_sec', 0)),
             thumbnail=thumbnail,
             reply_to_message_id=None if is_group_chat else callback.message.message_id,
@@ -347,13 +350,13 @@ async def display_search_results_page(message_or_callback, pagination, edit_mess
         icon = "🎵" if result_type == "song" else "🎬"
         
         # Полное название для отображения в сообщении
-        text += f"{result_num}. {icon} <b>{title}</b> - {artist} ({duration})\n"
-        
-        # Формируем текст кнопки с исполнителем
-        if artist and artist != 'Unknown' and artist != 'Unknown Artist':
-            download_text = f"⬇️ {result_num}. {artist} - {title}"
+        if artist:
+            text += f"{result_num}. {icon} <b>{title}</b> - {artist} ({duration})\n"
         else:
-            download_text = f"⬇️ {result_num}. {title}"
+            text += f"{result_num}. {icon} <b>{title}</b> ({duration})\n"
+        
+        # Формируем текст кнопки только с названием трека, без артиста
+        download_text = f"⬇️ {result_num}. {title}"
         
         keyboards.append([
             InlineKeyboardButton(
@@ -1032,7 +1035,7 @@ async def process_select_page(callback: CallbackQuery, state: FSMContext):
         await state.update_data(pagination=pagination.__dict__)
     
     # Отображаем выбранную страницу
-    await display_search_results_page(callback, pagination, edit_message=True)
+    await display_search_results_page(callback, pagination, edit_message=True) 
 
 # Добавляем общий обработчик для любых текстовых сообщений в личных чатах
 # Используем низкий приоритет, чтобы этот обработчик сработал только если сообщение не обработано другими обработчиками
