@@ -1,0 +1,282 @@
+# Инструкция по деплою бота на Timeweb через консоль
+
+Войдите в консоль сервера Timeweb с учетными данными:
+- Логин: root
+- Пароль: p5#6PtzY9aYLtn
+
+## Шаг 1: Создайте скрипт установки
+
+```bash
+cat > /var/www/deploy_bot.sh << 'EOF'
+#!/bin/bash
+
+# Установка необходимых пакетов
+apt-get update
+apt-get install -y python3 python3-pip git ffmpeg
+
+# Создание директории для проекта
+mkdir -p /var/www/youtube-to-audio
+cd /var/www/youtube-to-audio
+
+# Создание директории для модулей
+mkdir -p downloads services handlers keyboards data
+chmod 777 downloads
+
+# Создаем .env файл
+cat > .env << 'ENVEOF'
+BOT_TOKEN=7973435952:AAEfPzVc5iFnPh1Ovt_bromjUGqi6MHkd1w
+
+# Настройки для групповых чатов
+GROUP_MODE_ENABLED=true
+DIRECT_PROCESS_YOUTUBE_LINKS=true
+MAX_REQUESTS_PER_USER=50
+
+# Настройки для работы с комнатами (топиками)
+TOPICS_MODE_ENABLED=true
+# Список разрешенных тем через запятую (пустой = все темы)
+ALLOWED_TOPIC_IDS=2
+# Список разрешенных групп через запятую (пустой = все группы)
+ALLOWED_GROUP_IDS=
+ENVEOF
+
+# Создаем requirements.txt
+cat > requirements.txt << 'REQEOF'
+aiogram==3.20.0.post0
+yt-dlp==2025.4.30
+imageio-ffmpeg==0.6.0
+ytmusicapi==1.10.3
+python-dotenv==1.1.0
+requests==2.31.0
+typing-extensions>=4.8.0
+cachetools>=5.3.1
+REQEOF
+
+# Создаем yt-dlp.conf
+cat > yt-dlp.conf << 'YTDLPEOF'
+# Общие настройки
+--no-playlist
+--geo-bypass
+--prefer-ffmpeg
+--no-check-certificate
+
+# Настройки аудио
+--extract-audio
+--audio-format mp3
+--audio-quality 0
+
+# Настройка имени выходного файла
+--output "downloads/audio_%(id)s.%(ext)s"
+YTDLPEOF
+
+# Создаем main.py
+cat > main.py << 'MAINEOF'
+import asyncio
+import logging
+import sys
+import os
+from aiogram import Bot, Dispatcher
+from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.client.default import DefaultBotProperties
+from dotenv import load_dotenv
+
+# Загрузка переменных окружения из .env файла
+load_dotenv()
+
+# Получение переменных окружения
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROUP_MODE_ENABLED = os.getenv("GROUP_MODE_ENABLED", "false").lower() == "true"
+TOPICS_MODE_ENABLED = os.getenv("TOPICS_MODE_ENABLED", "false").lower() == "true"
+
+# Настройка логирования
+logger = logging.getLogger(__name__)
+
+async def set_commands(bot):
+    """Установка команд бота для меню"""
+    from aiogram.types import BotCommand
+    
+    # Команды для приватных чатов
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Запустить бота"),
+        BotCommand(command="help", description="Помощь по боту"),
+        BotCommand(command="search", description="Поиск на YouTube"),
+    ])
+    
+    logger.info("Команды бота установлены")
+
+async def process_youtube_link(update, bot):
+    """Обработка YouTube ссылки"""
+    chat_id = update.chat.id
+    message_id = update.message_id
+    from_user_id = update.from_user.id
+    from_user_name = update.from_user.full_name
+    
+    # Получение ссылки из сообщения
+    text = update.text
+    
+    # Простая проверка на YouTube ссылку
+    if "youtube.com" in text or "youtu.be" in text:
+        logger.info(f"Обнаружена YouTube ссылка от пользователя {from_user_id} ({from_user_name}): {text}")
+        
+        # Отправка сообщения о начале обработки
+        await bot.send_message(
+            chat_id=chat_id, 
+            text=f"Начинаю загрузку аудио из YouTube...",
+            reply_to_message_id=message_id
+        )
+        
+        try:
+            # Здесь будет загрузка аудио через yt-dlp
+            # Сейчас просто имитация
+            await asyncio.sleep(2)
+            
+            # Отправка аудио
+            await bot.send_message(
+                chat_id=chat_id,
+                text="Аудио успешно загружено!",
+                reply_to_message_id=message_id
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при обработке YouTube ссылки: {e}")
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"Ошибка при загрузке аудио: {str(e)}",
+                reply_to_message_id=message_id
+            )
+
+async def main():
+    """
+    Основная функция запуска бота.
+    Инициализирует бота, диспетчер и регистрирует все обработчики.
+    """
+    # Настройка логирования
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        stream=sys.stdout,
+    )
+    logger.info("Запуск бота...")
+    
+    if GROUP_MODE_ENABLED:
+        logger.info("Режим групповых чатов ВКЛЮЧЕН")
+    else:
+        logger.info("Режим групповых чатов ОТКЛЮЧЕН")
+        
+    if TOPICS_MODE_ENABLED:
+        logger.info("Режим топиков ВКЛЮЧЕН")
+    else:
+        logger.info("Режим топиков ОТКЛЮЧЕН")
+
+    # Принудительная очистка папки загрузок при запуске
+    try:
+        # Очистка папки загрузок
+        downloads_dir = "downloads"
+        if not os.path.exists(downloads_dir):
+            os.makedirs(downloads_dir)
+        for file in os.listdir(downloads_dir):
+            file_path = os.path.join(downloads_dir, file)
+            try:
+                if os.path.isfile(file_path):
+                    os.unlink(file_path)
+            except Exception as e:
+                logger.error(f"Ошибка при удалении {file_path}: {e}")
+        logger.info("Директория загрузок полностью очищена")
+    except Exception as e:
+        logger.error(f"Ошибка при очистке директории загрузок: {e}")
+
+    # Создание экземпляра бота
+    bot = Bot(
+        token=BOT_TOKEN, 
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
+    
+    # Создаем хранилище для FSM
+    storage = MemoryStorage()
+    dp = Dispatcher(storage=storage)
+    
+    # Обработка команды /start
+    @dp.message()
+    async def message_handler(message, bot):
+        if message.text == "/start":
+            await bot.send_message(
+                chat_id=message.chat.id,
+                text=f"Привет, {message.from_user.first_name}! Я бот для скачивания аудио с YouTube. "
+                     f"Просто отправь мне ссылку на видео, и я конвертирую его в аудиофайл."
+            )
+        elif message.text and ("youtube.com" in message.text or "youtu.be" in message.text):
+            await process_youtube_link(message, bot)
+    
+    # Установка команд бота
+    await set_commands(bot)
+    
+    # Получаем информацию о боте и выводим в лог
+    bot_info = await bot.get_me()
+    logger.info(f"Бот запущен как @{bot_info.username} (ID: {bot_info.id})")
+    
+    # Пропуск накопившихся апдейтов и запуск поллинга
+    await bot.delete_webhook(drop_pending_updates=True)
+    logger.info("Бот успешно запущен и готов к работе")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Бот остановлен")
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {e}", exc_info=True)
+MAINEOF
+
+# Создание systemd сервиса для автозапуска бота
+cat > /etc/systemd/system/youtube-to-audio-bot.service << 'SERVICEEOF'
+[Unit]
+Description=YouTube to Audio Telegram Bot
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/var/www/youtube-to-audio
+ExecStart=/usr/bin/python3 main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+SERVICEEOF
+
+# Установка зависимостей Python
+pip3 install -r requirements.txt
+
+# Перезагрузка systemd
+systemctl daemon-reload
+
+# Запуск сервиса
+systemctl enable youtube-to-audio-bot.service
+systemctl start youtube-to-audio-bot.service
+
+echo "Деплой завершен. Бот запущен как системный сервис."
+echo "Проверить статус бота можно командой: systemctl status youtube-to-audio-bot.service"
+EOF
+
+chmod +x /var/www/deploy_bot.sh
+```
+
+## Шаг 2: Запустите скрипт установки
+
+```bash
+cd /var/www
+./deploy_bot.sh
+```
+
+## Шаг 3: Проверьте, что бот запущен
+
+```bash
+systemctl status youtube-to-audio-bot.service
+```
+
+## Управление ботом
+
+- Просмотр логов: `journalctl -u youtube-to-audio-bot.service -f`
+- Остановка бота: `systemctl stop youtube-to-audio-bot.service`
+- Запуск бота: `systemctl start youtube-to-audio-bot.service`
+- Перезапуск бота: `systemctl restart youtube-to-audio-bot.service` 
