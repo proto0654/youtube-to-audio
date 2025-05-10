@@ -5,6 +5,4 @@ from handlers.search import router as search_router
 from handlers.group_handler import router as group_router
 
 # Список всех роутеров из пакета handlers
-routers = [start_router, callbacks_router, group_router, link_router, search_router]
-
-# Пустой файл инициализации для модуля handlers 
+routers = [start_router, callbacks_router, group_router, link_router, search_router] 

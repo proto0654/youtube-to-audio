@@ -10,8 +10,6 @@ import time
 import datetime
 import requests
 import asyncio
-import shutil
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -72,68 +70,46 @@ def cleanup_downloads_folder(max_age_hours=MAX_FILE_AGE_HOURS):
         logger.error(f"Ошибка при очистке директории загрузок: {e}")
 
 def force_cleanup_downloads_folder():
-    """Принудительная очистка папки загрузок"""
-    downloads_dir = "downloads"
-    
-    # Проверяем наличие директории
-    if not os.path.exists(downloads_dir):
-        os.makedirs(downloads_dir)
-        logger.info(f"Создана директория {downloads_dir}")
-        return
-    
-    # Получаем список файлов
-    files = os.listdir(downloads_dir)
-    
-    if not files:
-        logger.info("Файлов для очистки не найдено")
-        return
-    
-    # Удаляем все файлы
-    for file in files:
-        file_path = os.path.join(downloads_dir, file)
-        try:
+    """
+    Принудительно очищает все файлы из папки загрузок, независимо от их возраста.
+    Полезно для запуска при старте бота или при ручной очистке.
+    """
+    try:
+        # Проверяем наличие директории
+        if not os.path.exists(DOWNLOADS_DIR):
+            os.makedirs(DOWNLOADS_DIR)
+            logger.info(f"Создана директория для загрузок: {DOWNLOADS_DIR}")
+            return
+        
+        count = 0
+        for filename in os.listdir(DOWNLOADS_DIR):
+            file_path = os.path.join(DOWNLOADS_DIR, filename)
             if os.path.isfile(file_path):
-                os.unlink(file_path)
-            elif os.path.isdir(file_path):
-                shutil.rmtree(file_path)
-        except Exception as e:
-            logger.error(f"Ошибка при удалении {file_path}: {e}")
-    
-    logger.info(f"Очищено {len(files)} файлов из директории {downloads_dir}")
-
-def cleanup_old_downloads(max_age_minutes=30):
-    """Очистка старых загрузок"""
-    downloads_dir = "downloads"
-    current_time = time.time()
-    max_age_seconds = max_age_minutes * 60
-    
-    # Проверяем наличие директории
-    if not os.path.exists(downloads_dir):
-        return
-    
-    # Получаем список файлов
-    files = os.listdir(downloads_dir)
-    old_files = []
-    
-    for file in files:
-        file_path = os.path.join(downloads_dir, file)
-        if os.path.isfile(file_path):
-            file_age = current_time - os.path.getmtime(file_path)
-            if file_age > max_age_seconds:
-                old_files.append(file_path)
-    
-    if not old_files:
-        logger.info("Старых файлов для очистки не найдено")
-        return
-    
-    # Удаляем старые файлы
-    for file_path in old_files:
-        try:
-            os.unlink(file_path)
-        except Exception as e:
-            logger.error(f"Ошибка при удалении {file_path}: {e}")
-    
-    logger.info(f"Очищено {len(old_files)} старых файлов из директории {downloads_dir}")
+                try:
+                    # Попытка форсированного удаления с повторными попытками
+                    for attempt in range(3):
+                        try:
+                            os.remove(file_path)
+                            count += 1
+                            logger.info(f"Принудительно удален файл: {filename}")
+                            break
+                        except PermissionError:
+                            # Если файл заблокирован, даем системе немного времени
+                            logger.warning(f"Файл {filename} заблокирован, попытка {attempt+1}/3")
+                            time.sleep(0.5)
+                        except Exception as e:
+                            logger.warning(f"Не удалось удалить файл {filename}: {e}")
+                            break
+                except Exception as e:
+                    logger.warning(f"Ошибка при удалении файла {filename}: {e}")
+        
+        if count > 0:
+            logger.info(f"Принудительно очищено {count} файлов из директории загрузок")
+        else:
+            logger.info("Файлов для очистки не найдено")
+            
+    except Exception as e:
+        logger.error(f"Ошибка при принудительной очистке директории загрузок: {e}")
 
 def enhance_metadata(metadata):
     """
@@ -331,6 +307,7 @@ async def download_audio_from_youtube(url: str) -> tuple:
             telegram_thumb_path = os.path.join(DOWNLOADS_DIR, telegram_thumb_name)
             
             # Копируем файл (независимо от формата)
+            import shutil
             shutil.copy2(source_thumbnail, telegram_thumb_path)
             logger.info(f"Подготовлена обложка для Telegram: {telegram_thumb_path}")
         
